@@ -7,6 +7,7 @@ import type {
   ConversationDetail,
   ConversationSummary,
   ExampleInfo,
+  FeedbackInput,
   Health,
   LineageInfo,
   LoginState,
@@ -20,6 +21,7 @@ import type {
   TableInfo,
   TraceStep,
   TurnEvent,
+  TurnFeedback,
   UserAdministration,
 } from './types'
 
@@ -206,6 +208,12 @@ export const api = {
     }),
   deleteConversation: (id: string) =>
     getJson<void>(`/conversations/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  saveFeedback: (id: string, turnId: number, feedback: FeedbackInput) =>
+    getJson<TurnFeedback>(`/conversations/${encodeURIComponent(id)}/turns/${turnId}/feedback`, {
+      method: 'PUT', body: JSON.stringify(feedback),
+    }),
+  deleteFeedback: (id: string, turnId: number) =>
+    getJson<void>(`/conversations/${encodeURIComponent(id)}/turns/${turnId}/feedback`, { method: 'DELETE' }),
 
   tables: (layer?: string) => getJson<TableInfo[]>(`/metadata/tables${query({ layer })}`),
   columns: (table: string) => getJson<ColumnInfo[]>(`/metadata/columns${query({ table })}`),

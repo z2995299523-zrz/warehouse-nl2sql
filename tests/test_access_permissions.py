@@ -252,6 +252,11 @@ def test_history_ownership_revoke_expiry_and_session_logout(pilot):
     assert other.patch(path, json={"title": "越权操作"}).status_code == 404
     assert other.delete(path).status_code == 404
     assert other.post(f"{path}/turns", json={"question": "继续统计"}).status_code == 404
+    turn_id = sse_events(answer.text)[-1][1]["turn"]["id"]
+    feedback = f"{path}/turns/{turn_id}/feedback"
+    assert owner.put(feedback, json={"rating": "like"}).status_code == 200
+    assert other.put(feedback, json={"rating": "like"}).status_code == 404
+    assert admin.delete(feedback).status_code == 404
     managed = users["project-user"]
     now = int(time.time())
     changed = admin.put(f"/admin/users/{managed['id']}", json=managed | {
@@ -260,6 +265,8 @@ def test_history_ownership_revoke_expiry_and_session_logout(pilot):
     assert changed.status_code == 200
     assert owner.get("/metadata/tables").json() == []
     assert owner.get(path).status_code == 404 and not owner.get("/conversations").json()
+    assert owner.put(feedback, json={"rating": "like"}).status_code == 404
+    assert owner.delete(feedback).status_code == 404
     assert owner.post(f"{path}/turns", json={"question": "继续统计"}).status_code == 403
     token = other.cookies.get(COOKIE)
     assert other.post("/auth/logout").status_code == 204

@@ -54,7 +54,8 @@ export default function QueryPage() {
 
   useEffect(() => { open(routeId ?? null) }, [routeId, open])
 
-  const turns = chat.detail?.turns ?? []
+  const detail = chat.detail
+  const turns = detail?.turns ?? []
   const stepCount = chat.pending?.steps.length ?? 0
   const shownConversation = useRef<string | null>(null)
   useEffect(() => {                   // 有新内容时滚到最下面：刚打开的会话直接跳过去，跑的过程中平滑滚动
@@ -107,17 +108,18 @@ export default function QueryPage() {
                      )} />
             )}
             {showWelcome && <Welcome onPick={(text) => { setDraft(text); inputRef.current?.focus() }} />}
-            {turns.map((turn, index) => (
+            {detail?.turns.map((turn, index) => (
               <div className="turn" key={turn.id}>
                 <Question text={turn.question} time={turn.created_at} />
                 <AnswerCard
-                  result={turn.result}
+                  turn={turn}
                   explainActive={explainActive(turns, index)}
                   clarifyActive={turn.id === chat.detail?.context.clarify_turn_id}
                   clarifySkipped={turn.result.status === 'need_clarify' && clarifySkipped(turns, index)}
                   busy={chat.busy}
                   dialect={health?.dialect}
                   onPick={send}
+                  onFeedback={(feedback) => chat.saveFeedback(detail.id, turn.id, feedback)}
                 />
               </div>
             ))}

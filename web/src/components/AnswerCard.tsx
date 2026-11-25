@@ -3,10 +3,11 @@ import { LoadingOutlined, RedoOutlined, ReloadOutlined } from '@ant-design/icons
 import { Alert, Button, Space, Tag, Typography } from 'antd'
 import { useEffect, useState } from 'react'
 
-import { INTERNAL_STEP, STEP_LABELS, type QueryResult, type StepKey } from '../api/types'
+import { INTERNAL_STEP, STEP_LABELS, type FeedbackInput, type QueryResult, type StepKey, type Turn } from '../api/types'
 import type { PendingTurn } from '../state/chat'
 import { useModel } from '../state/model'
 import { describeStatus, formatMs } from '../utils/format'
+import AnswerFeedback from './AnswerFeedback'
 import ClarifyPanel from './ClarifyPanel'
 import ExplainPanel from './ExplainPanel'
 import ResultTabs from './ResultTabs'
@@ -68,16 +69,19 @@ function ValidationAlerts({ result }: { result: QueryResult }) {
 }
 
 interface AnswerProps {
-  result: QueryResult
+  turn: Turn
   explainActive: boolean
   clarifyActive: boolean
   clarifySkipped: boolean             // 这一轮的反问没人回答：后面问了新问题
   busy: boolean
   dialect?: string
   onPick: (label: string) => void
+  onFeedback: (feedback: FeedbackInput | null) => Promise<void>
 }
 
-export function AnswerCard({ result, explainActive, clarifyActive, clarifySkipped, busy, dialect, onPick }: AnswerProps) {
+/** 展示已保存的回答与该轮评价入口。 */
+export function AnswerCard({ turn, explainActive, clarifyActive, clarifySkipped, busy, dialect, onPick, onFeedback }: AnswerProps) {
+  const { result } = turn
   const status = describeStatus(result)
   const { labelOf } = useModel()
   return (
@@ -101,6 +105,7 @@ export function AnswerCard({ result, explainActive, clarifyActive, clarifySkippe
       )}
       <ValidationAlerts result={result} />
       {result.status !== 'explained' && <ResultTabs result={result} />}
+      <AnswerFeedback feedback={turn.feedback} onSave={onFeedback} />
     </div>
   )
 }

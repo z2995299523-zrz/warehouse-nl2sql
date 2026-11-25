@@ -8,6 +8,7 @@
 - GET  /conversations                 最近的会话；POST 新建会话
 - GET  /conversations/{id}            会话的全部轮次和当前上下文；PATCH 改标题；DELETE 删除
 - POST /conversations/{id}/turns      在会话里提问，SSE：每步一条 step，最后一条 turn（存下的这一轮和新的上下文）
+- PUT / DELETE /conversations/{id}/turns/{turn_id}/feedback 保存或撤回回答评价
 元数据：
 - GET  /metadata/tables     按层级列出表
 - GET  /metadata/columns    一张表的字段清单，带每个字段的直接来源、直接去向数
@@ -28,9 +29,9 @@ import threading
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import replace
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request, Response
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -46,8 +47,9 @@ from metadata.store import MetadataStore
 from nl2sql import service, model_settings
 from nl2sql.access_scope import AccessDenied, AccessScope, DENIED, scoped_indexes, scoped_metadata, sql_tables, table_ids
 from nl2sql.executor import NullExecutor, SQLiteExecutor
-from nl2sql.history import ConversationDetail, ConversationStore, ConversationSummary
+from nl2sql.history import ConversationDetail, ConversationStore, ConversationSummary, FeedbackInput, TurnFeedback
 from nl2sql.model_connection import normalize_api_key, normalize_base_url, probe_connection
+from nl2sql.result_labels import query_column_labels, result_column_labels
 from nl2sql.schemas import Clarify, QueryRequest, QueryResult, TraceStep
 from nl2sql.workflow import Pipeline
 
@@ -623,10 +625,37 @@ def create_conversation(request: Request, body: ConversationBody | None = None,
 def conversation(request: Request, conversation_id: str,
                  history: ConversationStore = Depends(get_history_dep)) -> ConversationDetail:
     """会话的全部轮次（从早到晚，每轮带流水线结果）和下一轮要用的上下文（上一轮的完整需求、还没回答的反问）"""
-    detail = history.get(conversation_id, **_history_scope(request))
+    scope = _history_scope(request)
+    detail = history.get(conversation_id, **scope)
     if detail is None:
         raise _conversation_missing(conversation_id)
+    _label_saved_results(detail, scope.get("allowed"))
     return detail
+
+
+def _label_saved_results(detail: ConversationDetail, allowed: frozenset[str] | None) -> None:
+    """为旧会话的返回值补展示列名，历史库中的结果保持原样。"""
+    pending = []
+    for turn in detail.turns:
+        result = turn.result
+        executed = result.get("exec_result")
+        if (result.get("status") == "ok" and result.get("sql") and executed and executed.get("executed")
+                and executed.get("columns") and not executed.get("column_labels")):
+            pending.append((result["sql"], executed))
+    if not pending:
+        return
+    try:
+        store = _active_store()
+    except (FileNotFoundError, RuntimeError):
+        return
+    for sql, executed in pending:
+        if allowed is not None:
+            try:
+                if not allowed.issuperset(sql_tables(sql)):
+                    continue
+            except AccessDenied:
+                continue
+        executed["column_labels"] = result_column_labels(executed["columns"], query_column_labels(sql, store))
 
 
 @app.patch("/conversations/{conversation_id}", response_model=ConversationSummary, summary="改会话标题")
@@ -646,6 +675,29 @@ def delete_conversation(request: Request, conversation_id: str,
     if not history.delete(conversation_id, **_history_scope(request)):
         raise _conversation_missing(conversation_id)
     model_settings.delete_conversation_model(conversation_id)
+    return Response(status_code=204)
+
+
+@app.put("/conversations/{conversation_id}/turns/{turn_id}/feedback", response_model=TurnFeedback, summary="保存回答评价")
+def save_turn_feedback(request: Request, conversation_id: str, turn_id: Annotated[int, Path(ge=1, le=2**63 - 1)],
+                       body: FeedbackInput,
+                       history: ConversationStore = Depends(get_history_dep)) -> TurnFeedback:
+    """保存点赞或带类型和说明的倒赞，已有评价时覆盖为本次提交。"""
+    try:
+        return history.save_feedback(conversation_id, turn_id, body, **_history_scope(request))
+    except LookupError as error:
+        raise HTTPException(404, str(error)) from error
+
+
+@app.delete("/conversations/{conversation_id}/turns/{turn_id}/feedback", status_code=204,
+            response_class=Response, summary="撤回回答评价")
+def delete_turn_feedback(request: Request, conversation_id: str, turn_id: Annotated[int, Path(ge=1, le=2**63 - 1)],
+                         history: ConversationStore = Depends(get_history_dep)) -> Response:
+    """撤回当前会话轮次的点赞或倒赞。"""
+    try:
+        history.delete_feedback(conversation_id, turn_id, **_history_scope(request))
+    except LookupError as error:
+        raise HTTPException(404, str(error)) from error
     return Response(status_code=204)
 
 
@@ -688,7 +740,7 @@ def ask_in_conversation(conversation_id: str, body: QuestionBody, pipeline: Pipe
     """在会话里问一轮：上一轮的完整需求和还没回答的反问由服务端从会话里取，跑完把这一轮存进会话
 
     事件：每走完一步一条 step（data 是 TraceStep），最后一条 turn，data 是
-    {"turn": 存下的这一轮（id、question、created_at、result）, "context": 下一轮的上下文}；
+    {"turn": 存下的这一轮（id、question、created_at、result、feedback）, "context": 下一轮的上下文}；
     出了没预料到的错时最后一条是 error（data 是 {"detail": 原因}）。
     model 换模型，存下的这一轮的 result.model 是本轮用的模型；不在能选的模型里时回 400。
     """

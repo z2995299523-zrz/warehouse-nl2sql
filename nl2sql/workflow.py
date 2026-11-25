@@ -70,6 +70,7 @@ from nl2sql.schemas import (
     TraceStep,
     ValidationSummary,
 )
+from nl2sql.sql_presentation import present_sql, result_column_labels, strip_sql_annotations
 from nl2sql.validator import SqlValidator
 
 MAX_SCOPE_LEVEL = 2
@@ -114,6 +115,7 @@ class PipelineState(TypedDict, total=False):
     named_notes: list[str]                     # 点名的表怎么处理的，写进结果的假设
     named_switch: bool                        # 点名了上一轮没用的表
     base_sql_rejected: list[str]              # 底稿在当前元数据上校验不过的前两条错误
+    base_sql: str                            # 校验通过后去掉展示注释的追问底稿
     scope_level: int
     base_tables: list[str]
     extra_terms: list[str]                    # ④ 每次说缺的东西，累积起来并进检索词
@@ -154,9 +156,7 @@ def _base_sql_of(request: QueryRequest, parsed: ParsedRequest | None) -> str:
 
 def _base_sql(state: PipelineState) -> str:
     """取本轮可用的追问底稿；改用新表或底稿在当前元数据上校验不过时返回空串"""
-    if state.get("base_sql_rejected") or state.get("named_switch"):
-        return ""
-    return _base_sql_of(state["request"], state.get("parsed"))
+    return state.get("base_sql", "")
 
 
 def _named_in_force(request: QueryRequest, parsed: ParsedRequest) -> list[str]:
@@ -313,6 +313,7 @@ class _Steps:
                 reason = " ".join(f"{error.rule} {error.message}".split())
                 rejected.append(reason if len(reason) <= 80 else reason[:79] + "…")
         updates["base_sql_rejected"] = rejected
+        updates["base_sql"] = strip_sql_annotations(base_sql) if base_sql and not rejected else ""
         lead = ""
         if switched:
             lead = f"改用点名的表 {'、'.join(named)}，不以上一轮的 SQL 为底；"
@@ -473,13 +474,18 @@ class _Steps:
         if access:
             access.check_current()
         sql = ""
+        labels: list[str] = []
         exec_result: ExecSummary | None = None
         if status == STATUS_OK or (status == STATUS_UNVALIDATED and not access):
             sql = format_sql(state.get("sql", ""), self._deps.validator if status == STATUS_OK else None)
+            if status == STATUS_OK:
+                sql, labels = present_sql(sql, self._deps.store)
             if access:
                 access.check_sql(sql)
         if status == STATUS_OK and state["request"].execute and getattr(self._deps.executor, "name", "none") != "none":
             exec_result = self._execute(sql)
+            if exec_result.executed:
+                exec_result.column_labels = result_column_labels(exec_result.columns, labels)
         if status == STATUS_OK:
             if exec_result is None:
                 summary = "状态 ok；仅生成，未执行"

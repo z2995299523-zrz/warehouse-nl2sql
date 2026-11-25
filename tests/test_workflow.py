@@ -13,6 +13,7 @@ import pytest
 from lineage.graph import LineageGraph
 from metadata.checks import ERROR, WARNING
 from metadata.importer import load_mart
+from metadata.sqlscope import parse_statements
 from metadata.store import MetadataStore, write_store
 from nl2sql import workflow
 from nl2sql.executor import DuckDBExecutor, ExecResult
@@ -192,6 +193,10 @@ def test_duckdb_executor_runs_the_sql_and_the_summary_has_no_data(make, mock_db)
     result = pipeline.run(request())
 
     assert result.status == "ok" and result.exec_result.executed and result.exec_result.row_count > 0
+    assert result.exec_result.columns == ["loan_bal_rmb"]
+    assert result.exec_result.column_labels[0].endswith("合计")
+    assert all(f"/* {label}：" in result.sql for label in ("数据表", "字段", "过滤条件", "输出"))
+    assert parse_statements(result.sql) == parse_statements(workflow.format_sql(GOOD_SQL))
     summary = result.trace[-1].summary
     assert f"已执行，返回 {result.exec_result.row_count} 行" in summary
     assert str(result.exec_result.rows[0][0]) not in summary                        # 轨迹里只有元数据，没有数据

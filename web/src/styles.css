@@ -84,6 +84,9 @@ code { font-family: "JetBrains Mono", Consolas, "Courier New", monospace; font-s
 .answer-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .status-tag { font-size: 13px; padding: 1px 10px; margin-inline-end: 0; }
 .answer-meta { font-size: 12.5px; }
+.answer-feedback { align-self: flex-start; }
+.answer-feedback .answer-feedback-button { color: var(--c-muted); }
+.answer-feedback .answer-feedback-button[aria-pressed="true"] { color: var(--c-primary); background: var(--c-primary-soft); }
 .step-progress { padding: 4px 0 2px; }
 .step-progress .ant-steps-item-content, .step-progress .ant-steps-item-description { font-size: 12px; }
 .requirement { background: var(--c-primary-soft); border-left: 3px solid var(--c-primary); padding: 8px 12px; border-radius: 0 6px 6px 0; line-height: 1.7; }
@@ -131,6 +134,7 @@ code { font-family: "JetBrains Mono", Consolas, "Courier New", monospace; font-s
 .result-tabs .ant-tabs-nav { margin-bottom: 10px; }
 .caliber .ant-descriptions-item-label { width: 96px; white-space: nowrap; }
 .exec-meta { margin-bottom: 8px; }
+.exec-summary-table .ant-table-cell { overflow-wrap: anywhere; }
 .exec-note, .exec-picker, .exec-kinds { margin-bottom: 12px; }
 .exec-chart, .exec-metrics { margin-bottom: 16px; }
 .exec-chart-head { margin-bottom: 8px; }

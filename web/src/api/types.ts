@@ -133,6 +133,7 @@ export type CellValue = string | number | boolean | null
 export interface ExecSummary {
   executed: boolean
   columns: string[]
+  column_labels?: string[]
   rows: CellValue[][]
   row_count: number
   truncated: boolean
@@ -187,11 +188,23 @@ export interface ConversationSummary {
   turn_count: number
 }
 
+export type FeedbackCategory = 'wrong_intent' | 'wrong_metric' | 'wrong_sql' | 'wrong_result' | 'unclear' | 'other'
+
+export type FeedbackInput = { rating: 'like' } | { rating: 'dislike'; category: FeedbackCategory; comment: string }
+
+export interface TurnFeedback {
+  rating: FeedbackInput['rating']
+  category: FeedbackCategory | null
+  comment: string
+  updated_at: string
+}
+
 export interface Turn {
   id: number
   question: string
   created_at: string
   result: QueryResult
+  feedback?: TurnFeedback | null
 }
 
 export interface ConversationContext {

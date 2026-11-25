@@ -627,11 +627,14 @@ def test_the_generator_is_told_not_to_use_the_tables_the_plan_dropped(evidence):
 
 
 def test_clarify_rules_name_the_usual_splits_and_forbid_choosing_a_caliber_by_default():
-    assert "日均的统计区间" in PLANNER_SYSTEM and "只说清了其中一个分岔" in PLANNER_SYSTEM
+    assert "日均的统计区间" in PLANNER_SYSTEM and "只问未说清的一项" in PLANNER_SYSTEM
     assert "不同的指标不算分岔" in PLANNER_SYSTEM
-    assert "就说明这里该反问" in PLANNER_SYSTEM
+    assert "不能反问才选常用口径" in PLANNER_SYSTEM
+    assert "样例的常用写法不能代替用户选口径" in PLANNER_SYSTEM
+    assert "实体编号（如客户号、项目编号）用对应的编号字段过滤" in PLANNER_SYSTEM
     assert "按规则 3 反问" in PLANNER_SYSTEM                                       # 只说「日均」时
-    assert "汇总程度高、但没有这个指标字段的表不能拿别的字段来凑" in PLANNER_SYSTEM
+    assert "不能用总量代替指定分类" in PLANNER_SYSTEM
+    assert "各期都用该表的同一指标字段" in PLANNER_SYSTEM
 
 
 def test_the_parser_asks_back_only_for_a_missing_object_or_metric_and_never_while_answering():
@@ -870,6 +873,23 @@ def test_a_two_hop_join_path_lists_each_hop_and_the_middle_table(mock_store):
     assert f"- {CUST_BAL} → {DIM_ORG}（经过 dim.corp_cust；会发散）：" in text
     assert f"1. {CUST_BAL}.cust_no = dim.corp_cust.cust_no（N:1；依据：血缘传递）" in text
     assert "2. dim.corp_cust.org_no = dim.org.org_no AND dim.corp_cust.cust_no = dim.org.x（1:N；依据：手工填写） 手工登记" in text
+
+
+def test_repeated_join_hop_keeps_the_full_first_step_and_each_paths_grain(mock_store):
+    evidence = make_evidence(mock_store)
+    hop = JoinHop(left_table=ORG_BAL, left_columns=["org_no"], right_table=DIM_ORG, right_columns=["org_no"],
+                  cardinality="N:1", origin="grain_key")
+    evidence.joins = [JoinHint(left_table=ORG_BAL, right_table=DIM_ORG, fan_out=False, hops=[hop]),
+                      JoinHint(left_table=CUST_BAL, right_table=DIM_ORG, fan_out=True, hops=[
+                          JoinHop(left_table=CUST_BAL, left_columns=["org_no"], right_table=ORG_BAL,
+                                  right_columns=["org_no"], cardinality="N:N", origin="grain_key"), hop])]
+
+    text = section(render_evidence(evidence), "## 关联路径")
+
+    condition = f"{ORG_BAL}.org_no = {DIM_ORG}.org_no"
+    assert text.count(condition) == 1
+    assert f"〔关联1〕{condition}（N:1，不发散；依据：同名粒度键）" in text
+    assert f"（经过 {ORG_BAL}；会发散）" in text and "2. 〔关联1〕" in text
 
 
 def test_examples_section_gives_requirement_caliber_tables_and_sql(evidence):

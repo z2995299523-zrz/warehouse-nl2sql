@@ -328,48 +328,35 @@ PARSER_SYSTEM = """你是实验室数据仓库专题库的「需求解析」助�
 
 # ── ④ 选表定口径 ──────────────────────────────
 
-PLANNER_SYSTEM = """你是实验室数据仓库专题库的「选表定口径」助手。输入是一份已经解析好的查数需求，和一份证据。证据分几节：候选表及其字段，指标字段的加工链路、同源字段对比、表之间的上下游、还可以上溯到的表（这四节只在能用血缘时才有），关联路径，相似样例（有样例时才有），说明。你要决定用哪些表和字段、怎么关联、口径是什么，输出查询方案。你不写 SQL，SQL 由下一步生成。
+PLANNER_SYSTEM = """你是实验室数据仓库专题库的选表定口径助手。按查数需求和证据输出方案，SQL 由下一步生成。
 
-只输出 JSON，不要写解释，不要用代码块包起来。decision 有四种结论：
-- ok：给出查询方案。
-- need_clarify：候选字段的口径有分岔而需求没有说明，反问用户。
-- need_upstream：当前范围缺维度、缺字段或粒度不够，要上溯到更底层的表。
-- cannot_answer：元数据范围内做不到。
-
-# 输出的 JSON 格式
-
-结论是 ok 时的完整示例（需求：2026-04-30 各一级部门不含外拨经费的预算余额，列出一级部门名称和余额。表名是示例，实际只能用证据里的表）：
+只输出 JSON 对象。空的可选字段省略，中文说明各写一句，避免在 reason、caliber、table_basis、join_basis 中重复同一事实。
+ok 示例（查 2026-04-30 各一级部门不含外拨的预算余额）：
 ```json
 {
   "decision": "ok",
   "tables": [
-    {"table": "ads.demo_dept_fund_d", "reason": "需求只到部门粒度，部门汇总表已满足，不必用项目级的表再汇总"},
+    {"table": "ads.demo_dept_fund_d", "reason": "已有部门粒度余额"},
     {"table": "dim.demo_dept", "reason": "取一级部门名称"}
   ],
   "fields": [
-    {"table": "ads.demo_dept_fund_d", "column": "budget_bal", "usage": "metric", "reason": "不含外拨经费的预算余额"},
-    {"table": "ads.demo_dept_fund_d", "column": "data_dt", "usage": "filter", "reason": "快照表的数据日期"},
-    {"table": "ads.demo_dept_fund_d", "column": "dept_no", "usage": "join", "reason": "关联部门维表"},
-    {"table": "dim.demo_dept", "column": "lvl1_dept_nm", "usage": "dimension", "reason": "按一级部门分组"},
-    {"table": "dim.demo_dept", "column": "dept_no", "usage": "join", "reason": "关联键"}
+    {"table": "ads.demo_dept_fund_d", "column": "budget_bal", "usage": "metric", "reason": "不含外拨"},
+    {"table": "ads.demo_dept_fund_d", "column": "data_dt", "usage": "filter", "reason": "快照日期"},
+    {"table": "ads.demo_dept_fund_d", "column": "dept_no", "usage": "join"},
+    {"table": "dim.demo_dept", "column": "lvl1_dept_nm", "usage": "dimension", "reason": "一级部门分组"},
+    {"table": "dim.demo_dept", "column": "dept_no", "usage": "join"}
   ],
   "joins": [
-    {"left_table": "ads.demo_dept_fund_d", "left_columns": ["dept_no"], "right_table": "dim.demo_dept", "right_columns": ["dept_no"], "join_type": "INNER", "reason": "部门编号多对一"}
+    {"left_table": "ads.demo_dept_fund_d", "left_columns": ["dept_no"], "right_table": "dim.demo_dept", "right_columns": ["dept_no"]}
   ],
   "filters": ["ads.demo_dept_fund_d.data_dt = DATE '2026-04-30'"],
-  "caliber": "budget_bal 由项目经费表按部门汇总而来，加工表达式是 SUM(CASE WHEN is_outbound = '0' THEN bal_amt ELSE 0 END)，不含外拨经费",
-  "table_basis": "需求只到部门粒度，用部门汇总表",
-  "join_basis": "按 dept_no 多对一关联部门维表（N:1，不发散），汇总结果不会重复计算",
-  "lineage_note": "",
-  "assumptions": [],
-  "examples_used": [],
-  "clarify": null,
-  "missing": [],
-  "reason": ""
+  "caliber": "预算余额按部门汇总 SUM(CASE WHEN is_outbound = '0' THEN bal_amt ELSE 0 END)",
+  "table_basis": "部门汇总表同时满足口径和粒度",
+  "join_basis": "部门编号 N:1，不发散"
 }
 ```
 
-其它三种结论只需要 decision 和对应的字段，其余字段可以省略：
+口径有歧义时只问一个问题，至少两个选项，各写明对应字段和含义：
 ```json
 {
   "decision": "need_clarify",
@@ -389,43 +376,36 @@ PLANNER_SYSTEM = """你是实验室数据仓库专题库的「选表定口径」
 {"decision": "cannot_answer", "reason": "元数据里没有车辆相关的表和字段，无法统计车辆使用情况"}
 ```
 
-字段说明：
-- tables：用到的表，每张写 reason（为什么用它）。只列真正会出现在 SQL 里的表，不用的表不要列。结论是 ok 时不能为空。
-- fields：用到的字段，指标、维度、过滤、关联、排序用到的都要列。table 必须是 tables 里的表，column 必须是证据里这张表的字段。usage 取 metric、dimension、filter、join、order、other。结论是 ok 时不能为空。
-- joins：关联。left_columns 与 right_columns 一一对应、个数相同；join_type 默认 INNER，只有要保留左表里关联不上的行时才用 LEFT；两侧的表都要列在 tables 里。
-- filters：过滤条件，写成 SQL 的写法，字段写成「模式.表.字段」，日期用 DATE 'YYYY-MM-DD'。
-- caliber：口径说明，引用证据里的加工表达式，说清楚指标是怎么算出来的。
-- table_basis：用表依据。join_basis：关联说明，用哪个键、对应关系、为什么不会重复计算。lineage_note：溯源说明，上溯时还原了哪些加工条件，没有上溯就留空。
-- assumptions：按默认处理的地方。examples_used：参考了哪些样例，写样例编号。
-- clarify：反问。question 只问一个问题，options 至少两个选项，label 是选项文字，meaning 写明对应哪个字段、含义是什么。
-- missing：需要上溯时缺什么，写成字段的叫法。reason：cannot_answer 的原因，need_upstream 可以补充说明。
+ok 方案要求：
+- tables、fields 非空，只列用到的表和字段。fields 列齐指标、维度、过滤、关联、排序，usage 取 metric、dimension、filter、join、order、other。
+- joins 两侧表都在 tables 里，关联键逐一配对。默认 INNER，需要保留左侧未匹配行才用 LEFT。
+- filters 用 SQL 写法，字段写「模式.表.字段」，日期用 DATE 'YYYY-MM-DD'。
+- caliber 引用证据里的加工表达式。table_basis 写选表依据。有关联时写 join_basis，上溯时在 lineage_note 交代还原的条件。assumptions 写默认处理，examples_used 写实际参考的样例编号。
 
 # 规则
 
 1. 只用证据里的表和字段，表名、字段名照证据原样写，不要自己编。
-2. 口径以证据里的加工链路（表达式、过滤条件、关联条件）为准。字段的中文名和口径说明常常不全，名字相近的字段口径可能不同，要看它是怎么算出来的。
-3. 口径分岔：同一个指标有几个口径不同的字段可选（「同源字段对比」会标出「同源不同口径」；没有这一节时，凭字段的中文名和口径说明判断）。常见的分岔有：含不含某一类经费（如外拨经费）、是不是全口径、日均的统计区间（年日均、季日均、月日均）。不同的指标不算分岔：需求点名了某一类（如中央财政、自筹、外拨），有字段正好对得上就直接用它，不要拿它和总的经费一起反问。
-   - 需求的口径线索说清了，就选对应的字段，并在 caliber 里引用它的加工表达式；
-   - 口径线索没说清，或者只说清了其中一个分岔（例如说了不含外拨经费，没说日均是哪个统计区间），就用 need_clarify：只问没说清的那一个，每个选项写明对应哪个字段、含义是什么；
-   - 能反问时，不要替用户挑一个口径写进 assumptions。你要写「需求没说明……，按最常用的……处理」这样的假设，就说明这里该反问；
-   - 只有本次不能反问时，才按最常用的理解选一个，写进 assumptions。
-   只有这种口径分岔而需求没说清的情况才反问。其它不确定的地方（日期、排序、列的写法）一律按默认处理，写进 assumptions，不要反问。
-4. 选表：先找有需求要的那个指标字段、并且口径对得上的表，再在这些表里选满足需求粒度的、汇总程度最高的，例如只要部门粒度就用部门汇总表，不要用项目级的表再自己汇总；汇总程度高、但没有这个指标字段的表不能拿别的字段来凑（需求要的是某一类经费，汇总表只有总经费，就不能用总经费代替）。这些表分属不同层级时（从上到下是专题层、汇总层、标准层、贴源层），按层级从上往下取：专题层有满足需求（有要的指标字段、口径对得上、粒度够）的表就只用专题层的，满足不了才用汇总层，再满足不了才用标准层，最后才用贴源层；汇总程度只在同一层级里比。关联维表取名称、部门这类属性不受层级限制。需要维度属性（名称、部门、专项类型）时，用带关联键的表去关联维表；维度字段已经在事实表里就不用再关联；没有用到维表里的字段（不分组、不过滤、不取名称）就不要关联维表，也不要把它写进 tables。样例只参考写法和口径，不要照搬样例里这次用不到的表和关联。入选原因是「非标准表」的表没有收进设计文档，口径没确认过：其它候选表能满足需求时不用它们，都满足不了时才用，并在 table_basis 里说明。
-5. 关联：只用证据「关联路径」里列出的关联，在 joins 里写清用哪个键。对应关系 N:1 表示左表每一行最多对应右表一行，不会重复。1:N、N:N、未知，或者路径标了「会发散」的，左表的行会重复，要在 join_basis 里说明怎么避免重复计算（先汇总再关联、按粒度键去重等）。
+2. 口径以加工表达式、过滤和关联条件为准。没有血缘时才按字段中文名与口径说明判断。
+3. 口径分岔：同一个指标有多个口径（如含不含外拨经费、全口径或部分口径、日均的统计区间）时，查看「同源不同口径」和需求线索。需求点名某类指标且有对应字段时直接用，不同的指标不算分岔。
+   - 需求说明了口径就选对应字段。只说清其中一个分岔时，其他分岔仍要判断。例如「全院」只限定汇总范围，是否含外拨仍需单独判断。
+   - 能反问且口径未明确时，必须返回 need_clarify，只问未说清的一项。样例的常用写法不能代替用户选口径；写「需求未说明……，按……处理」的假设之前，先检查是否应当反问。
+   - 不能反问才选常用口径并记入 assumptions。日期、排序和列写法按默认处理并记录，不为这些反问。
+4. 选表：同时满足指标字段、口径和粒度。先核对指标的限定词，有对应的子类指标就用它；也可用有分类过滤字段的明细表，不能用总量代替指定分类。按专题层、汇总层、标准层、贴源层依次找，专题层满足不了才用汇总层，其余类推。汇总程度只在同一层级里比，优先用能满足要求的高汇总表。维表取属性不受层级限制，事实表已有属性或本次不用属性时不关联。样例中的表和关联按本次需求取舍。入选原因是「非标准表」的表没有收进设计文档，其它候选表都满足不了时才用，并在 table_basis 说明。
+5. 关联：只用证据「关联路径」的键。路径里的〔关联N〕复用同编号步骤的键、对应关系和依据。N:1 不发散；1:N、N:N、未知或路径标了「会发散」时，在 join_basis 说明如何防止重复计算，例如先汇总或按粒度键去重。
 6. 时间：
    - 快照表一定要有数据日期条件，写进 filters；全量表、维表不要加。
    - 时间不限定日期而用到快照表时，取该表最新的数据日期：数据日期字段 = (SELECT MAX(数据日期字段) FROM 该表)，并写进 assumptions。
    - 区间用在快照表上要小心：对数据日期取区间会把多天的快照加在一起。要看每天（或每月末）的值，就按数据日期分组；区间指的是业务日期字段（签约日期、立项日期）时，过滤那个字段，数据日期取区间的最后一天。
    - 日均用现成的日均字段，只取截止日那一天的值，不要对多天的行再求平均。需求说了统计区间（年日均、月日均）就用对应的字段；只说「日均」而候选里有不同统计区间的日均字段时，按规则 3 反问。
-   - 较年初是当期减上年末，较上月末是当期减上月末：两个日期的数都要取，filters 里把两个日期都列出来。
+   - 同一指标跨期对比要使用一致的字段口径、单位和统计范围。同一快照表能覆盖各时点时，各期都用该表的同一指标字段。较年初用当期与上年末，较上月末用当期与上月末，filters 列出对比的两个日期。
 7. 计数：按被计数的实体的粒度来。用粒度正好是这个实体的表，COUNT(DISTINCT 粒度键)；汇总表里现成的「项目数」「笔数」字段不能跨行相加（同一个项目可能在多个部门里重复出现），除非汇总的粒度正好就是要的粒度。
-8. 缺东西：先在全部候选表里找。候选里已经有的表（入选原因是召回、上溯带入、样例带入、关联路径经过的中间表、上一轮用过、缺的东西单独召回、非标准表都一样）可以直接用；入选原因是「缺的东西单独召回」的表，是拿你上一次说缺的东西逐条单独召回来的，先看它们能不能补上。汇总层、标准层、贴源层的表也一样：上层的表不够用、而候选里某张下层的表有需求要的维度和字段时，就选它出方案（decision 写 ok），不要再要求上溯。只有全部候选表都没有需求要的维度或字段，或者粒度都不够时，才用 need_upstream，missing 写成字段的叫法。上溯最多 2 层，到了第 2 层仍缺，照样写 need_upstream 和 missing，由程序如实告诉用户找不到什么。用下层的表查数时（不论它是本来就在候选里，还是上溯带进来的），要把下游表加工这个字段时用过的过滤条件和关联条件还原出来：证据里血缘的每一跳都带着，写进 filters 和 joins，查出来的数才能和专题层的数对得上。加工链路里只写一行、注明「同某字段的第 N 跳」的跳，表达式和条件与那一跳相同；条件写成〔条件N〕的，原文是这一节开头「几跳共用的条件」里同编号的那一条。
+8. 缺东西：先查全部候选（缺的东西单独召回、非标准表都一样），重点看单独补召回的表。汇总层、标准层、贴源层的表也一样，已在候选且能满足就用。所有候选都无法满足时才用 need_upstream，missing 写缺的字段叫法；第 2 层仍缺也这样写。用下层表时把加工链路各跳的过滤及关联还原到 filters 和 joins。「同某字段的第 N 跳」复用该跳的表达式与条件；〔条件N〕见「几跳共用的条件」。
 9. 加工条件里的 CAST('${data_dt}' AS DATE) 这类写法是跑批日期参数，查数时换成需求里的日期。只在加工中间层（CTE）之间的关联不用照搬。
 10. 元数据范围内做不到时用 cannot_answer，在 reason 里写明原因；不要编造不存在的字段。
 11. 一句多问（需求有子问题）时，方案要覆盖每个子问题：fields 列齐，filters 和 caliber 里写清各自的条件。
-12. 每张表、每个字段都写 reason；再写 caliber、table_basis、join_basis、lineage_note；参考了样例就在 examples_used 里写样例编号，没有样例就留空。
-13. 码值：字段后面标了「名称字段」「码值表」的是代码字段，存的是代码。过滤值是中文名称（如「横向项目」「已结题」）时，用标出的名称字段过滤（标的是码值表就先把码值表关联进来）；代码字段只能和码值说明里写明的代码比较，码值说明没写的代码不要猜。
-14. 追问：用户消息里有「上一轮的 SQL」时，本轮是在上一轮的基础上增加或修改。以上一轮的 SQL 为底：它用的表（入选原因「上一轮用过」）、关联、过滤条件和口径都保留，上一轮限定的范围（只看横向项目、只看某类协议关联的项目）不能丢；只按本轮需求增加或修改，新增的内容上一轮的表给不了时，从其它候选表补，再按关联路径接到上一轮的表上。本轮明确改掉的（换了日期、换了口径、去掉某个条件）照本轮的来。"""
+12. 表、指标和维度的 reason 写具体用途；过滤、关联、排序字段的用途已由其他结构化项说明时可省略 reason。
+13. 码值：明确的实体编号（如客户号、项目编号）用对应的编号字段过滤。字段后面标了「名称字段」「码值表」的是代码字段。中文名称（如「横向项目」「已结题」）用名称字段过滤，标了「码值表」就关联码值表取名称。枚举代码要用码值说明里的映射，不要猜代码。
+14. 追问：有「上一轮的 SQL」就以它为底，保留表、关联、过滤、口径及上一轮限定的范围，按本轮要求新增或替换。上一轮的表不够时按关联路径补其它候选表。"""
 
 
 # 只在用户点名了表时放进用户消息，④ 的系统提示词里没有它：普通问题的提示词一字不变，选表不受影响
@@ -442,7 +422,7 @@ NAMED_TABLE_RULE = ("入选原因是「用户点名」的表是用户指定要�
 DIALECT_RULES = """1. 只用 PostgreSQL 与 GaussDB 共有的标准语法；只写一条 SELECT 语句，可以带 WITH，不写多条语句。
 2. 表名带模式名（如 ads.xxx）；给每张表起别名，所有字段都带别名前缀。
 3. 日期字面量写 DATE 'YYYY-MM-DD'；不用 CURRENT_DATE、NOW()，日期一律用需求里换算好的日期。
-4. 不写 SELECT *；输出列起简短的英文小写别名（如 budget_bal、dept_name）。输出别名只能在 ORDER BY、GROUP BY 里单独使用，WHERE、HAVING 和同一层的 SELECT 里不能引用，要写别名对应的原表达式。
+4. 不写 SELECT *；最终结果的每个输出列用双引号起简短、互不重复的中文别名（如 AS "预算余额"、AS "一级部门名称"）。汇总、计算列写清指标或口径（如 AS "较年初预算余额增量"），使用字段中文名并结合本次需求。CTE、子查询等中间列可用英文别名。输出别名只在 ORDER BY、GROUP BY 里单独使用，WHERE、HAVING 和同一层的 SELECT 要写原表达式。
 5. 快照表要带数据日期条件，写在它所在那一层查询的 WHERE 或 JOIN 条件里；WITH 里的每一层、子查询里的每一层，用到快照表都要各自带。
 6. 对比类（较年初、较上月末）用 CASE WHEN 按日期分别求和再相减，日期条件用 IN 列出所有要用的日期。
 7. 比率按百分比保留两位：ROUND(分子 * 100.0 / NULLIF(分母, 0), 2)；先汇总分子、分母再相除，不要对各行的比率求平均。
@@ -465,20 +445,20 @@ GENERATOR_SYSTEM = f"""你是实验室数据仓库专题库的 SQL 生成助手�
 
 示例一，较年初的增量：两个日期的余额一次取出，用 CASE WHEN 分开再相减。
 ```sql
-SELECT o.lvl1_dept_nm AS dept_name,
+SELECT o.lvl1_dept_nm AS "一级部门名称",
        SUM(CASE WHEN b.data_dt = DATE '2026-04-30' THEN b.budget_bal ELSE 0 END)
-     - SUM(CASE WHEN b.data_dt = DATE '2025-12-31' THEN b.budget_bal ELSE 0 END) AS bal_inc
+     - SUM(CASE WHEN b.data_dt = DATE '2025-12-31' THEN b.budget_bal ELSE 0 END) AS "较年初预算余额增量"
 FROM ads.demo_dept_fund_d b
 JOIN dim.demo_dept o ON b.dept_no = o.dept_no
 WHERE b.data_dt IN (DATE '2026-04-30', DATE '2025-12-31')
 GROUP BY o.lvl1_dept_nm
-ORDER BY bal_inc DESC
+ORDER BY "较年初预算余额增量" DESC
 ```
 
 示例二，一句话问了两个问题：用条件计数写在一条 SQL 里，已到期按到期日期早于需求里换算好的日期。
 ```sql
-SELECT COUNT(DISTINCT a.agreement_no) AS signed_cnt,
-       COUNT(DISTINCT CASE WHEN a.expire_dt < DATE '2026-05-19' THEN a.agreement_no END) AS expired_cnt
+SELECT COUNT(DISTINCT a.agreement_no) AS "签订协议数",
+       COUNT(DISTINCT CASE WHEN a.expire_dt < DATE '2026-05-19' THEN a.agreement_no END) AS "到期协议数"
 FROM ads.demo_agreement a
 WHERE a.sign_dt BETWEEN DATE '2026-01-01' AND DATE '2026-12-31'
 ```"""
@@ -971,20 +951,43 @@ def _hop_condition(hop: JoinHop) -> str:
                         for left, right in zip(hop.left_columns, hop.right_columns))
 
 
-def _render_join(hint: JoinHint) -> list[str]:
+def _hop_key(hop: JoinHop) -> tuple:
+    """用有方向的关联键、对应关系和出处识别内容完全相同的关联步骤。"""
+    return (hop.left_table, tuple(hop.left_columns), hop.right_table, tuple(hop.right_columns),
+            hop.cardinality, hop.origin, hop.note)
+
+
+def _render_join(hint: JoinHint, repeated: dict[tuple, int], shown: set[tuple]) -> list[str]:
     """关联路径：直连写一行，经过中间表的每一步一行；写明键、对应关系、是否发散和依据"""
     spread = "会发散" if hint.fan_out else "不发散"
-    notes = [f" {hop.note}" if hop.note else "" for hop in hint.hops]
-    origins = [_ORIGIN_NAMES.get(hop.origin, hop.origin) for hop in hint.hops]
+
+    def step(hop: JoinHop, *, direct: bool = False) -> str:
+        key = _hop_key(hop)
+        mark = f"〔关联{repeated[key]}〕" if key in repeated else ""
+        if key in shown:
+            return f"{mark}（{spread}）" if direct else mark
+        if mark:
+            shown.add(key)
+        origin = _ORIGIN_NAMES.get(hop.origin, hop.origin)
+        spread_note = f"，{spread}" if direct else ""
+        note = f" {hop.note}" if hop.note else ""
+        return f"{mark}{_hop_condition(hop)}（{hop.cardinality}{spread_note}；依据：{origin}）{note}"
+
     if len(hint.hops) == 1:
-        hop = hint.hops[0]
-        return [f"- {hint.left_table} → {hint.right_table}：{_hop_condition(hop)}"
-                f"（{hop.cardinality}，{spread}；依据：{origins[0]}）{notes[0]}"]
+        return [f"- {hint.left_table} → {hint.right_table}：{step(hint.hops[0], direct=True)}"]
     middle = "、".join(hop.right_table for hop in hint.hops[:-1])
     lines = [f"- {hint.left_table} → {hint.right_table}（经过 {middle}；{spread}）："]
     for number, hop in enumerate(hint.hops, 1):
-        lines.append(f"  {number}. {_hop_condition(hop)}（{hop.cardinality}；依据：{origins[number - 1]}）{notes[number - 1]}")
+        lines.append(f"  {number}. {step(hop)}")
     return lines
+
+
+def _render_joins(hints: Sequence[JoinHint]) -> list[str]:
+    """相同关联步骤只展开一次，其他路径仍按原来的顺序保留步骤编号。"""
+    counts = Counter(_hop_key(hop) for hint in hints for hop in hint.hops)
+    repeated = {key: index for index, key in enumerate((key for key, count in counts.items() if count > 1), 1)}
+    shown: set[tuple] = set()
+    return [line for hint in hints for line in _render_join(hint, repeated, shown)]
 
 
 def _render_examples(examples: Sequence[EvidenceExample], *, used: Sequence[str] = (), sql_chars: int | None = None) -> str:
@@ -1033,7 +1036,7 @@ def _render(evidence: Evidence, level: int) -> str:
         sections.append(_section("## 还可以上溯到的表",
                                  [f"- {option.table_id} {option.table_cn}（{option.layer}）"
                                   for option in evidence.upstream_options]))
-    sections.append(_section("## 关联路径", [line for hint in hints for line in _render_join(hint)]))
+    sections.append(_section("## 关联路径", _render_joins(hints)))
     if evidence.use_examples:
         examples = _render_examples(evidence.examples, sql_chars=SHRINK_EXAMPLE_SQL_CHARS if level >= 4 else None)
         sections.append(_section("## 相似样例", [examples] if examples else []))

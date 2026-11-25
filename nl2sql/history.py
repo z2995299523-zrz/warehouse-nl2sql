@@ -12,14 +12,14 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from nl2sql.schemas import Clarify, QueryResult, RoundBasis
 
 HISTORY_FILE_NAME = "history.db"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 TITLE_CHARS = 40                 # 会话标题默认取第一轮提问的前多少个字
 CLARIFY_STATUS = "need_clarify"
 
@@ -41,6 +41,13 @@ CREATE TABLE IF NOT EXISTS turns (
     created_at       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_turns_conversation ON turns (conversation_id, id);
+CREATE TABLE IF NOT EXISTS turn_feedback (
+    turn_id     INTEGER PRIMARY KEY REFERENCES turns (id) ON DELETE CASCADE,
+    rating      TEXT NOT NULL,
+    category    TEXT,
+    comment     TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
 """
 # 会话列表里的一项：会话加上它有几轮；{where} 填过滤条件
 _SUMMARY = ("SELECT c.id, c.title, c.created_at, c.updated_at, COUNT(t.id) AS turn_count"
@@ -72,6 +79,31 @@ class ConversationSummary(BaseModel):
     turn_count: int = 0
 
 
+class FeedbackInput(BaseModel):
+    """回答评价：点赞直接记录，倒赞同时要求类型和说明。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rating: Literal["like", "dislike"]
+    category: Literal["wrong_intent", "wrong_metric", "wrong_sql", "wrong_result", "unclear", "other"] | None = None
+    comment: Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)] = ""
+
+    @model_validator(mode="after")
+    def check_details(self) -> "FeedbackInput":
+        """校验评价所需的明细。"""
+        if self.rating == "dislike" and (self.category is None or not self.comment):
+            raise ValueError("倒赞需要选择反馈类型并填写说明")
+        if self.rating == "like" and (self.category is not None or self.comment):
+            raise ValueError("点赞只需要提交评价")
+        return self
+
+
+class TurnFeedback(FeedbackInput):
+    """已保存的回答评价。"""
+
+    updated_at: str
+
+
 class Turn(BaseModel):
     """会话里的一轮"""
 
@@ -79,6 +111,7 @@ class Turn(BaseModel):
     question: str
     created_at: str
     result: dict[str, Any]                    # QueryResult.public()：不含提示词和模型原始回复
+    feedback: TurnFeedback | None = None
 
 
 class ConversationContext(BaseModel):
@@ -190,10 +223,18 @@ class ConversationStore:
             head = self._head(conn, conversation_id, owner_id, allowed)
             if head is None:
                 return None
-            rows = conn.execute("SELECT id, question, status, requirement, clarify, result, created_at FROM turns"
-                                " WHERE conversation_id = ? ORDER BY id", (conversation_id,)).fetchall()
-        turns = [Turn(id=row["id"], question=row["question"], created_at=row["created_at"],
-                      result=json.loads(row["result"])) for row in rows]
+            rows = conn.execute(
+                "SELECT t.id, t.question, t.status, t.requirement, t.clarify, t.result, t.created_at,"
+                " f.rating, f.category, f.comment, f.updated_at AS feedback_at"
+                " FROM turns t LEFT JOIN turn_feedback f ON f.turn_id = t.id"
+                " WHERE t.conversation_id = ? ORDER BY t.id", (conversation_id,)).fetchall()
+        turns = [
+            Turn(id=row["id"], question=row["question"], created_at=row["created_at"],
+                 result=json.loads(row["result"]),
+                 feedback=TurnFeedback(rating=row["rating"], category=row["category"], comment=row["comment"],
+                                       updated_at=row["feedback_at"]) if row["rating"] is not None else None)
+            for row in rows
+        ]
         latest = next((row for row in reversed(rows) if row["requirement"]), None)
         return ConversationDetail(**dict(head), turn_count=len(turns), turns=turns, context=_context_from(latest))
 
@@ -248,6 +289,36 @@ class ConversationStore:
             conn.execute("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
                          (head["title"] or _title_of(question), now, conversation_id))
         return Turn(id=cursor.lastrowid, question=question, created_at=now, result=public)
+
+    @contextmanager
+    def _feedback_transaction(self, conversation_id: str, turn_id: int, owner_id: str | None,
+                              allowed: frozenset[str]) -> Iterator[sqlite3.Connection]:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if self._head(conn, conversation_id, owner_id, allowed) is None or conn.execute(
+                "SELECT 1 FROM turns WHERE id = ? AND conversation_id = ?", (turn_id, conversation_id)
+            ).fetchone() is None:
+                raise LookupError("回答不存在")
+            yield conn
+
+    def save_feedback(self, conversation_id: str, turn_id: int, feedback: FeedbackInput, *,
+                      owner_id: str | None = None, allowed: frozenset[str] = frozenset()) -> TurnFeedback:
+        """保存一轮评价；会话不可见或轮次不属于该会话时抛出 LookupError。"""
+        with self._feedback_transaction(conversation_id, turn_id, owner_id, allowed) as conn:
+            saved = TurnFeedback(**feedback.model_dump(), updated_at=_now())
+            conn.execute(
+                "INSERT INTO turn_feedback (turn_id, rating, category, comment, updated_at) VALUES (?, ?, ?, ?, ?)"
+                " ON CONFLICT(turn_id) DO UPDATE SET rating = excluded.rating, category = excluded.category,"
+                " comment = excluded.comment, updated_at = excluded.updated_at",
+                (turn_id, saved.rating, saved.category, saved.comment, saved.updated_at),
+            )
+            return saved
+
+    def delete_feedback(self, conversation_id: str, turn_id: int, *, owner_id: str | None = None,
+                        allowed: frozenset[str] = frozenset()) -> None:
+        """撤回一轮评价；会话不可见或轮次不属于该会话时抛出 LookupError。"""
+        with self._feedback_transaction(conversation_id, turn_id, owner_id, allowed) as conn:
+            conn.execute("DELETE FROM turn_feedback WHERE turn_id = ?", (turn_id,))
 
     def context(self, conversation_id: str) -> ConversationContext:
         """下一轮要带给流水线的上下文：最近一个有完整需求的轮次的需求，以及它还没被回答的反问；

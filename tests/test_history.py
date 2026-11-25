@@ -6,7 +6,7 @@ from itertools import count
 import pytest
 
 from nl2sql import history as history_module
-from nl2sql.history import TITLE_CHARS, ConversationContext, ConversationStore
+from nl2sql.history import TITLE_CHARS, ConversationContext, ConversationStore, FeedbackInput
 from nl2sql.schemas import CallRecord, Clarify, ClarifyOption, ParsedRequest, QueryResult, ValidationSummary
 
 CLARIFY = Clarify(question="对公存款余额按哪个口径？", options=[ClarifyOption(label="含保证金"), ClarifyOption(label="不含保证金")])
@@ -107,6 +107,25 @@ def test_a_turn_preserves_its_metadata_version(store: ConversationStore) -> None
 
     assert turn.result["metadata_version"] == result.metadata_version
     assert detail.turns[0].result["metadata_version"] == result.metadata_version
+
+
+def test_history_upgrade_adds_feedback_to_old_turns_and_deletes_it_with_the_conversation(store: ConversationStore) -> None:
+    """旧会话库可就地升级，反馈跨实例保存，删除会话后无孤儿评价。"""
+    conversation = store.create()
+    turn = store.add_turn(conversation.id, "查存款", ok_result())
+    with sqlite3.connect(store.path) as conn:
+        conn.execute("DROP TABLE turn_feedback")
+        conn.execute("PRAGMA user_version = 1")
+
+    upgraded = ConversationStore(store.path)
+    assert upgraded.get(conversation.id).turns == [turn]
+    feedback = upgraded.save_feedback(conversation.id, turn.id, FeedbackInput(rating="like"))
+    reopened = ConversationStore(store.path)
+    saved = reopened.get(conversation.id)
+    assert saved.turns[0].feedback == feedback and saved.updated_at == turn.created_at
+    assert reopened.delete(conversation.id)
+    with sqlite3.connect(store.path) as conn:
+        assert conn.execute("SELECT turn_id FROM turn_feedback").fetchall() == []
 
 
 def test_old_turn_without_metadata_version_still_loads_and_provides_context(store: ConversationStore) -> None:

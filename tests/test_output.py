@@ -10,6 +10,7 @@ import pytest
 
 from eval.questions import load_questions
 from metadata.checks import ERROR, WARNING
+from metadata.sqlscope import parse_statements
 from nl2sql.executor import DuckDBExecutor, ExecResult, NullExecutor
 from nl2sql.output import (
     format_sql,
@@ -21,6 +22,7 @@ from nl2sql.output import (
 )
 from nl2sql.retriever import RecallQuery
 from nl2sql.schemas import ExecSummary, QueryPlan, ValidationSummary
+from nl2sql.sql_presentation import present_sql, result_column_labels, strip_sql_annotations
 from nl2sql.validator import ValidationIssue, ValidationReport
 
 SQL_QUESTIONS = [question for question in load_questions() if question.expect == "sql"]
@@ -101,17 +103,39 @@ def test_format_sql_does_not_validate_when_nothing_was_formatted():
 
 
 @pytest.mark.parametrize("question", SQL_QUESTIONS, ids=lambda question: question.id)
-def test_formatted_gold_sql_still_passes_validation_and_returns_the_same_rows(question, mock_validator, mock_db):
+def test_formatted_gold_sql_still_passes_validation_and_returns_the_same_rows(
+        question, mock_validator, mock_store, mock_db):
     formatted = format_sql(question.gold_sql, mock_validator)
+    annotated, labels = present_sql(formatted, mock_store)
 
-    report = mock_validator.validate(formatted, question.gold_tables, question.gold_columns)
+    report = mock_validator.validate(annotated, question.gold_tables, question.gold_columns)
     executor = DuckDBExecutor(mock_db)
-    before, after = executor.execute(question.gold_sql, max_rows=None), executor.execute(formatted, max_rows=None)
+    before = executor.execute(question.gold_sql, max_rows=None)
+    after = executor.execute(annotated, max_rows=None)
 
     assert formatted != question.gold_sql.strip() and "\n" in formatted         # 真的排过版，不是退回了原文
+    assert "/* 数据表：" in annotated and "/* 字段：" in annotated
+    assert parse_statements(annotated) == parse_statements(strip_sql_annotations(annotated))
     assert [(issue.rule, issue.message) for issue in report.issues] == []
     assert after.executed, after.error
+    assert before.columns == after.columns and len(labels) == len(after.columns)
     assert sorted(after.rows, key=repr) == sorted(before.rows, key=repr)
+
+
+def test_result_labels_and_comments_follow_cte_columns_and_aliases(mock_store):
+    sql = """WITH balances AS (
+        SELECT org_no, dep_bal_rmb FROM ads.org_corp_dep_bal_d WHERE data_dt = DATE '2026-09-30'
+    )
+    SELECT o.org_nm AS label, SUM(b.dep_bal_rmb) AS "存款合计"
+    FROM balances b JOIN dim.org o USING (org_no)
+    WHERE b.dep_bal_rmb IS NOT NULL GROUP BY o.org_nm HAVING SUM(b.dep_bal_rmb) > 0 LIMIT 3"""
+    annotated, labels = present_sql(format_sql(sql), mock_store)
+
+    assert result_column_labels(["label", "存款合计"], labels) == [mock_store.column("dim.org", "org_nm").column_cn,
+                                                                 "存款合计"]
+    assert all(f"/* {kind}：" in annotated for kind in ("查询来源", "关联条件", "过滤条件", "分组过滤", "行数限制"))
+    assert "按两侧同名字段" in annotated
+    assert result_column_labels(["raw", "已命名"], []) == ["结果列 1（raw）", "已命名"]
 
 
 # ── 摘要 ──────────────────────────────────────
@@ -161,7 +185,7 @@ def test_summarize_exec_keeps_errors_and_notes_and_stays_json_friendly():
     assert (skipped.executed, skipped.rows) == (False, [])
     assert skipped.note == NullExecutor().execute("SELECT 1").note != ""
     assert json.loads(json.dumps(with_data.model_dump(mode="json"))) == {
-        "executed": True, "columns": ["d", "v"], "rows": [["2026-09-30", "1.5"]], "row_count": 1,
+        "executed": True, "columns": ["d", "v"], "column_labels": [], "rows": [["2026-09-30", "1.5"]], "row_count": 1,
         "truncated": False, "elapsed_ms": 0, "error": "", "note": ""}
 
 

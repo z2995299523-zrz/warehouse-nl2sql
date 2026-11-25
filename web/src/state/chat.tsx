@@ -7,7 +7,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useNavigate } from 'react-router'
 
 import { api, errorText, streamTurn } from '../api/client'
-import type { ConversationDetail, ConversationSummary, TraceStep } from '../api/types'
+import type { ConversationDetail, ConversationSummary, FeedbackInput, TraceStep, TurnFeedback } from '../api/types'
 
 /** 正在跑（或者跑失败了）的一轮 */
 export interface PendingTurn {
@@ -36,6 +36,7 @@ interface ChatState {
   refreshList: () => void
   rename: (id: string, title: string) => Promise<void>
   remove: (id: string) => Promise<void>
+  saveFeedback: (id: string, turnId: number, feedback: FeedbackInput | null) => Promise<void>
 }
 
 const ChatContext = createContext<ChatState | null>(null)
@@ -161,12 +162,22 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     if (activeId.current === id) navigate('/')
   }, [navigate])
 
+  const saveFeedback = useCallback(async (id: string, turnId: number, feedback: FeedbackInput | null) => {
+    let saved: TurnFeedback | null = null
+    if (feedback) saved = await api.saveFeedback(id, turnId, feedback)
+    else await api.deleteFeedback(id, turnId)
+    setDetail((current) => current?.id === id ? {
+      ...current,
+      turns: current.turns.map((turn) => turn.id === turnId ? { ...turn, feedback: saved } : turn),
+    } : current)
+  }, [])
+
   const value = useMemo<ChatState>(() => ({
     conversationId, detail, loading, loadError, pending,
     busy: running, execute, setExecute,
-    conversations, listError, open, ask, dismissPending, reloadDetail, refreshList, rename, remove,
+    conversations, listError, open, ask, dismissPending, reloadDetail, refreshList, rename, remove, saveFeedback,
   }), [conversationId, detail, loading, loadError, pending, running, execute, conversations, listError, open, ask,
-       dismissPending, reloadDetail, refreshList, rename, remove])
+       dismissPending, reloadDetail, refreshList, rename, remove, saveFeedback])
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>
 }

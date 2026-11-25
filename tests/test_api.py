@@ -195,6 +195,53 @@ def test_conversations_can_be_created_listed_renamed_and_deleted(api):
     assert [item["id"] for item in client.get("/conversations").json()] == [second["id"]]
 
 
+def test_feedback_is_saved_with_the_turn_and_can_be_changed_or_withdrawn(api) -> None:
+    """流式回答生成后可点赞、改为倒赞、编辑并撤回，刷新会话可恢复当前评价。"""
+    client, _ = api
+    path = f"/conversations/{client.post('/conversations').json()['id']}"
+    turn = sse_events(client.post(f"{path}/turns", json={"question": "查余额"}).text)[-1][1]["turn"]
+    feedback_path = f"{path}/turns/{turn['id']}/feedback"
+    assert turn["feedback"] is None
+
+    liked = client.put(feedback_path, json={"rating": "like"})
+    assert liked.status_code == 200 and liked.json()["rating"] == "like"
+    assert client.get(path).json()["turns"][0] == turn | {"feedback": liked.json()}
+
+    disliked = client.put(feedback_path, json={"rating": "dislike", "category": "wrong_metric", "comment": "  应排除贴现  "})
+    assert disliked.status_code == 200
+    assert disliked.json()["category"] == "wrong_metric" and disliked.json()["comment"] == "应排除贴现"
+    assert client.get(path).json()["turns"][0] == turn | {"feedback": disliked.json()}
+    changed = client.put(feedback_path, json={"rating": "dislike", "category": "wrong_sql", "comment": "缺少日期过滤"})
+    assert changed.status_code == 200 and changed.json()["comment"] == "缺少日期过滤"
+    assert client.get(path).json()["turns"] == [turn | {"feedback": changed.json()}]
+
+    assert client.delete(feedback_path).status_code == 204
+    assert client.delete(feedback_path).status_code == 204
+    assert client.get(path).json()["turns"] == [turn]
+
+
+def test_feedback_validates_details_and_turn_membership(api) -> None:
+    """倒赞的类型和说明由服务端强校验，轮次 ID 和会话必须匹配。"""
+    client, _ = api
+    path = f"/conversations/{client.post('/conversations').json()['id']}"
+    turn = sse_events(client.post(f"{path}/turns", json={"question": "查余额"}).text)[-1][1]["turn"]
+    route = f"/turns/{turn['id']}/feedback"
+    disliked = {"rating": "dislike", "category": "wrong_sql", "comment": "缺少日期过滤"}
+    for payload in (
+        {"rating": "dislike"},
+        disliked | {"category": None},
+        disliked | {"category": "unknown"},
+        disliked | {"comment": " \n "},
+        disliked | {"comment": "字" * 1001},
+        disliked | {"rating": "like"},
+    ):
+        assert client.put(path + route, json=payload).status_code == 422
+    another = f"/conversations/{client.post('/conversations').json()['id']}"
+    assert client.put(another + route, json=disliked).status_code == 404
+    assert client.delete(another + route).status_code == 404
+    assert client.get(path).json()["turns"] == [turn]
+
+
 @pytest.fixture
 def three_models(monkeypatch):
     """能选的模型固定成三个：默认 DeepSeek、千问、小米 MiMo，不看本机 .env 里配了哪些 Key"""
@@ -614,13 +661,15 @@ def test_openapi_schema_lists_every_endpoint(api):
 
     assert response.status_code == 200
     paths = response.json()["paths"]
+    feedback_path = "/conversations/{conversation_id}/turns/{turn_id}/feedback"
     assert set(paths) == {"/nl2sql/query", "/nl2sql/stream", "/nl2sql/models", "/nl2sql/model-settings/qwen", "/nl2sql/model-configs", "/nl2sql/model-configs/test", "/nl2sql/model-configs/{model_id}",
                           "/nl2sql/model-configs/{model_id}/default", "/conversations", "/conversations/{conversation_id}/model",
-                          "/conversations/{conversation_id}", "/conversations/{conversation_id}/turns",
+                          "/conversations/{conversation_id}", "/conversations/{conversation_id}/turns", feedback_path,
                           "/metadata/tables", "/metadata/columns", "/metadata/search", "/metadata/lineage",
                           "/metadata/examples", "/health", "/auth/me", "/auth/login", "/auth/logout",
                           "/admin/users", "/admin/users/{user_id}", "/admin/domains"}
     assert set(paths["/conversations/{conversation_id}"]) == {"get", "patch", "delete"}
+    assert set(paths[feedback_path]) == {"put", "delete"}
     assert "text/event-stream" in paths["/nl2sql/stream"]["post"]["responses"]["200"]["content"]
 
 

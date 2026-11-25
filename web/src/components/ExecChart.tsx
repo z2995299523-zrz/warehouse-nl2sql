@@ -41,13 +41,26 @@ function categoryAxis(points: ChartPoint[]) {
   }
 }
 
-function lineOption(points: ChartPoint[], name: string) {
+function namedAxes(x: string, y: string) {
+  return {
+    x: { name: x, nameLocation: 'middle' as const, nameGap: 32, nameTextStyle: { color: TEXT_COLOR } },
+    y: { name: y, nameLocation: 'end' as const, nameGap: 10, nameTextStyle: { color: TEXT_COLOR } },
+  }
+}
+
+function metricLegend(name: string) {
+  return { data: [name], top: 0, left: 'center' as const, selectedMode: false as const, textStyle: { color: TEXT_COLOR } }
+}
+
+function lineOption(points: ChartPoint[], name: string, labelName: string) {
+  const axes = namedAxes(labelName, name)
   return {
     animation: false,
-    grid: { left: 8, right: 24, top: 16, bottom: 8, containLabel: true },
+    grid: { left: 12, right: 24, top: 52, bottom: 36, containLabel: true },
+    legend: metricLegend(name),
     tooltip: axisTooltip(),
-    xAxis: { ...categoryAxis(points), axisLabel: { color: TEXT_COLOR, hideOverlap: true } },
-    yAxis: valueAxis,
+    xAxis: { ...categoryAxis(points), ...axes.x, axisLabel: { color: TEXT_COLOR, hideOverlap: true } },
+    yAxis: { ...valueAxis, ...axes.y },
     series: [{
       name,
       type: 'line' as const,
@@ -71,24 +84,30 @@ function barSeries(points: ChartPoint[], name: string, position: 'right' | 'top'
   }
 }
 
-function barOption(points: ChartPoint[], name: string) {
+function barOption(points: ChartPoint[], name: string, labelName: string) {
+  const axes = namedAxes(name, labelName)
   return {
     animation: false,
-    grid: { left: 8, right: 64, top: 8, bottom: 8, containLabel: true },
+    grid: { left: 12, right: 64, top: 52, bottom: 36, containLabel: true },
+    legend: metricLegend(name),
     tooltip: axisTooltip(),
-    xAxis: valueAxis,
-    yAxis: { ...categoryAxis(points), inverse: true, axisLabel: { color: TEXT_COLOR, width: 200, overflow: 'truncate' as const } },
+    xAxis: { ...valueAxis, ...axes.x },
+    yAxis: { ...categoryAxis(points), ...axes.y, inverse: true,
+             axisLabel: { color: TEXT_COLOR, width: 200, overflow: 'truncate' as const } },
     series: [barSeries(points, name, 'right', [0, 4, 4, 0], 14)],
   }
 }
 
-function columnOption(points: ChartPoint[], name: string) {
+function columnOption(points: ChartPoint[], name: string, labelName: string) {
+  const axes = namedAxes(labelName, name)
   return {
     animation: false,
-    grid: { left: 8, right: 16, top: 24, bottom: 8, containLabel: true },
+    grid: { left: 12, right: 16, top: 52, bottom: 36, containLabel: true },
+    legend: metricLegend(name),
     tooltip: axisTooltip(),
-    xAxis: { ...categoryAxis(points), axisLabel: { color: TEXT_COLOR, hideOverlap: true, width: 96, overflow: 'truncate' as const } },
-    yAxis: valueAxis,
+    xAxis: { ...categoryAxis(points), ...axes.x,
+             axisLabel: { color: TEXT_COLOR, hideOverlap: true, width: 96, overflow: 'truncate' as const } },
+    yAxis: { ...valueAxis, ...axes.y },
     series: [barSeries(points, name, 'top', [4, 4, 0, 0], 32)],
   }
 }
@@ -111,10 +130,10 @@ function pieOption(points: ChartPoint[], name: string) {
   }
 }
 
-function optionOf(kind: ChartKind, points: ChartPoint[], name: string) {
-  if (kind === 'line') return lineOption(points, name)
-  if (kind === 'column') return columnOption(points, name)
-  return kind === 'pie' ? pieOption(points, name) : barOption(points, name)
+function optionOf(kind: ChartKind, points: ChartPoint[], name: string, labelName: string) {
+  if (kind === 'line') return lineOption(points, name, labelName)
+  if (kind === 'column') return columnOption(points, name, labelName)
+  return kind === 'pie' ? pieOption(points, name) : barOption(points, name, labelName)
 }
 
 function Canvas({ option, height }: { option: echarts.EChartsCoreOption; height: number }) {
@@ -133,33 +152,39 @@ function Canvas({ option, height }: { option: echarts.EChartsCoreOption; height:
   return <div ref={box} className="exec-chart-canvas" style={{ height }} />
 }
 
-export default function ExecChart({ exec, plan, kind }: { exec: ExecSummary; plan: ChartPlan; kind: ChartKind }) {
+export default function ExecChart({ exec, headers, plan, kind }: {
+  exec: ExecSummary; headers: string[]; plan: ChartPlan; kind: ChartKind
+}) {
   const [valueIndex, setValueIndex] = useState(plan.valueIndexes[0])
-  const name = exec.columns[valueIndex]
+  const name = headers[valueIndex]
+  const labelName = plan.labelIndexes.map((index) => headers[index]).join(' / ')
   const all = useMemo(() => chartPoints(exec, plan, valueIndex, kind), [exec, plan, valueIndex, kind])
   const points = useMemo(() => (kind === 'bar' || kind === 'column' ? all.slice(0, MAX_BARS) : all), [all, kind])
-  const option = useMemo(() => optionOf(kind, points, name), [kind, points, name])
+  const option = useMemo(() => optionOf(kind, points, name, labelName), [kind, points, name, labelName])
 
   if (kind === 'metric') {
     return (
       <Flex wrap gap={32} className="exec-metrics">
         {plan.valueIndexes.map((index) => (
-          <Statistic key={index} title={exec.columns[index]} value={formatCell(exec.rows[0][index])} />
+          <Statistic key={index} title={headers[index]} value={formatCell(exec.rows[0][index])} />
         ))}
       </Flex>
     )
   }
-  const labelName = plan.labelIndexes.map((index) => exec.columns[index]).join(' / ')
-  const height = kind === 'bar' ? Math.max(MIN_HEIGHT_PX, points.length * BAR_ROW_PX + 40) : kind === 'pie' ? PIE_HEIGHT_PX : AXIS_HEIGHT_PX
+  const height = kind === 'bar' ? Math.max(MIN_HEIGHT_PX, points.length * BAR_ROW_PX + 104) : kind === 'pie' ? PIE_HEIGHT_PX : AXIS_HEIGHT_PX
   return (
     <div className="exec-chart">
-      <Flex justify="space-between" align="center" wrap gap={8} className="exec-chart-head">
-        <Typography.Text strong>{name}<Typography.Text type="secondary">（按 {labelName}）</Typography.Text></Typography.Text>
-        {plan.valueIndexes.length > 1 && (
-          <Select size="small" value={valueIndex} onChange={setValueIndex} popupMatchSelectWidth={false} aria-label="换指标"
-                  options={plan.valueIndexes.map((index) => ({ value: index, label: exec.columns[index] }))} />
-        )}
-      </Flex>
+      {(kind === 'pie' || plan.valueIndexes.length > 1) && (
+        <Flex justify={kind === 'pie' ? 'space-between' : 'flex-end'} align="center" wrap gap={8} className="exec-chart-head">
+          {kind === 'pie' && (
+            <Typography.Text strong>{name}<Typography.Text type="secondary">（按 {labelName}）</Typography.Text></Typography.Text>
+          )}
+          {plan.valueIndexes.length > 1 && (
+            <Select size="small" value={valueIndex} onChange={setValueIndex} popupMatchSelectWidth={false} aria-label="换指标"
+                    options={plan.valueIndexes.map((index) => ({ value: index, label: headers[index] }))} />
+          )}
+        </Flex>
+      )}
       <Canvas option={option} height={height} />
       {all.length > points.length && (
         <Typography.Text type="secondary">共 {all.length} 行，图上只画前 {points.length} 行，其余看表格</Typography.Text>

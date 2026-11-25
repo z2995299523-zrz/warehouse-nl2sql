@@ -404,6 +404,7 @@ class ExecSummary(BaseModel):
 
     executed: bool
     columns: list[str] = Field(default_factory=list)
+    column_labels: list[str] = Field(default_factory=list)  # 展示名，按列位置对应，旧会话可没有
     rows: list[list[Any]] = Field(default_factory=list)
     row_count: int = 0
     truncated: bool = False

@@ -697,6 +697,10 @@ class ScopeResolver:
         """追溯一个字段：指向实体表是直取；指向 CTE、派生表就到那一层继续追溯；找不到为 unresolved"""
         return self._column(scope, col, 0)
 
+    def resolve_expression(self, scope: Scope, expression: exp.Expression) -> Resolution:
+        """按表达式本身追溯来源，适用于无别名或同名的多个输出列。"""
+        return self._expression(scope, expression, 0)
+
     def resolve_output(self, scope: Scope, name: str) -> Resolution:
         """追溯一个查询层的输出字段
 

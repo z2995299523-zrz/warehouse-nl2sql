@@ -44,18 +44,21 @@ export default function ExecTable({ exec, display }: { exec: ExecSummary; displa
     if (plan?.kinds.includes(display as ChartKind)) return display as ChartKind
     return plan?.kinds.length === 1 ? 'table' : null
   })
-  const columns = useMemo<ColumnsType<Row>>(() => exec.columns.map((name, index) => {
+  const headers = useMemo(() => exec.columns.map((name, index) => exec.column_labels?.[index] || name), [exec])
+  const compact = exec.rows.length === 1 && headers.length > 0 && headers.length <= 4
+  const columns = useMemo<ColumnsType<Row>>(() => headers.map((name, index) => {
     const numeric = exec.rows.length > 0 && exec.rows.every((row) => row[index] === null || isNumeric(row[index]))
     return {
       key: `c${index}`,
       dataIndex: `c${index}`,
       title: name,
-      align: numeric ? 'right' : 'left',
+      align: numeric && !compact ? 'right' : 'left',
+      width: compact ? String(100 / headers.length) + '%' : undefined,
       render: (value: CellValue) => (
         <span className={value === null ? 'cell-null' : undefined}>{formatCell(value)}</span>
       ),
     }
-  }), [exec])
+  }), [compact, exec, headers])
   const data = useMemo<Row[]>(() => exec.rows.map((row, rowIndex) => {
     const record: Row = { key: rowIndex }
     row.forEach((value, index) => { record[`c${index}`] = value })
@@ -77,7 +80,7 @@ export default function ExecTable({ exec, display }: { exec: ExecSummary; displa
       )}
       {plan && kind && kind !== 'table' && (
         <Suspense fallback={<Spin size="small" />}>
-          <ExecChart exec={exec} plan={plan} kind={kind} />
+          <ExecChart exec={exec} headers={headers} plan={plan} kind={kind} />
         </Suspense>
       )}
       <Flex justify="space-between" align="center" className="exec-meta">
@@ -85,16 +88,19 @@ export default function ExecTable({ exec, display }: { exec: ExecSummary; displa
           返回 {exec.row_count} 行，用时 {formatMs(exec.elapsed_ms)}
           {exec.truncated && `；结果超过上限，只取回了前 ${exec.row_count} 行`}
         </Typography.Text>
-        <Button size="small" icon={<DownloadOutlined />} onClick={() => downloadCsv('查询结果.csv', exec.columns, exec.rows)}>
+        <Button size="small" icon={<DownloadOutlined />} onClick={() => downloadCsv('查询结果.csv', headers, exec.rows)}>
           导出 CSV
         </Button>
       </Flex>
       <Table<Row>
         size="small"
+        className={compact ? 'exec-summary-table' : undefined}
+        style={compact ? { maxWidth: headers.length * 256 } : undefined}
+        tableLayout={compact ? 'fixed' : undefined}
         columns={columns}
         dataSource={data}
-        scroll={{ x: 'max-content' }}
-        pagination={{
+        scroll={compact ? undefined : { x: 'max-content' }}
+        pagination={compact ? false : {
           defaultPageSize: 10,
           showSizeChanger: true,
           pageSizeOptions: [10, 20, 50, 100],

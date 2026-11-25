@@ -93,6 +93,8 @@ cd web && npm run build
 
 ## 仓库入口
 
+[更新日志](CHANGELOG.md)记录功能改动与评估结果。
+
 | 路径 | 内容 |
 | --- | --- |
 | `main.py`、`config.py` | FastAPI 接口、模型和运行配置 |
